@@ -7,20 +7,37 @@ body, html {
   background-color: #000;
   margin: 0;
   padding: 0;
+  color: #aaa;
+  text-align: center;
+  font-family: monospace;
+  font-size: 18px;
+}
+
+a {
+  color: #fff;
+  text-decoration: none;
+}
+
+a:hover, a:active {
+  text-decoration: underline;
 }
 
 #cnv {
   display: block;
-  width: 512px;
+  width: 768px;
   height: 448px;
   margin: 20px auto;
-  border: 1px solid #444;
   border-radius: 5px;
 }
   </style>
 </head>
 <body>
-  <canvas id="cnv" width="1024" height="896"></canvas>
+  <canvas id="cnv" width="1536" height="896"></canvas>
+  <p>Controls: Arrow keys, X (Jump), Z (Run), Enter (Size)</p>
+  <p>SMB3 Physics <a href="https://github.com/velipso/smb3-physics">Source Code</a> /
+    <a href="https://sean.fun/">Home</a></p>
+  <p>Based on <a href="http://www.sonicepoch.com/sm3mix/">Southbird</a>
+    disassembly on <a href="https://github.com/captainsouthbird/smb3">GitHub</a></p>
   <script>
 const cnv = document.getElementById('cnv');
 const ctx = cnv.getContext('2d');
@@ -49,6 +66,80 @@ const keyboardMap = {
 };
 let input = inputEmpty();
 let hit = inputEmpty();
+let drawFuncs = [];
+
+function highlightPoint(sx, sy, horiz) {
+  drawFuncs.push(() => {
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = horiz ? '#0f0' : '#f00';
+    ctx.fillRect(sx, sy, 1, 1);
+    ctx.restore();
+  });
+}
+
+function highlightTile(tx, ty, horiz) {
+  tx *= 16;
+  ty *= 16;
+  const n = 0.5 + 0.5/4;
+  drawFuncs.push(() => {
+    ctx.save();
+    ctx.beginPath();
+    if (horiz) {
+      ctx.moveTo(tx + n, ty + n);
+      ctx.lineTo(tx + n, ty + n + 15);
+      ctx.moveTo(tx + n + 15, ty + n);
+      ctx.lineTo(tx + n + 15, ty + n + 15);
+    } else {
+      ctx.moveTo(tx + n, ty + n);
+      ctx.lineTo(tx + n + 15, ty + n);
+      ctx.moveTo(tx + n, ty + n + 15);
+      ctx.lineTo(tx + n + 15, ty + n + 15);
+    }
+    ctx.strokeStyle = horiz ? '#0f0' : '#f00';
+    ctx.globalAlpha = 0.3;
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function drawScreen({
+  playerX,
+  playerY,
+  leftEdgeOffset,
+  rightEdgeOffset,
+  heightOffset,
+}) {
+  for (let y = 0; y < world.length; y++) {
+    const row = world[y];
+    for (let x = 0; x < row.length; x++) {
+      const ch = row[x];
+      const isSolid = ch === '#';
+      ctx.fillStyle = isSolid ? '#aaa' : '#333';
+      ctx.beginPath();
+      ctx.rect(
+        x * 16,
+        y * 16,
+        16, 16
+      );
+      ctx.fill();
+    }
+  }
+
+  ctx.fillStyle = '#0ff';
+  ctx.fillRect(
+    Math.floor(playerX) + leftEdgeOffset,
+    Math.floor(playerY) + heightOffset + 1,
+    rightEdgeOffset - leftEdgeOffset,
+    31 - heightOffset
+  );
+  for (const f of drawFuncs) {
+    f();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(Math.floor(playerX), Math.floor(playerY), 1, 1);
+}
+
 function start() {
   let frameCount = 0;
   let nextFrame = Date.now();
@@ -56,6 +147,7 @@ function start() {
     const now = Date.now();
     let i = 0;
     while (nextFrame < now) {
+      drawFuncs = [];
       tick();
       hit = inputEmpty();
       frameCount++;
@@ -114,120 +206,135 @@ window.addEventListener('blur', onBlur);
 
 let targetFPS = 60;
 
-let playerX = 16;
-let playerXFrac = 0;
+let playerX = 20;
 let playerY = 32;
-let playerYFrac = 0;
 let playerDX = 0;
 let playerDY = 0;
-let playerInAir = 0;
+let playerInAir = false;
 let playerIsBig = true;
 let playerIsDucking = false;
-let counterWiggle = 0;
 
-const FALLRATE_MAX = 0x40;
-const PLAYER_TOPWALKSPEED = 0x18;
-const PLAYER_TOPRUNSPEED = 0x28;
-const PLAYER_MAXSPEED = 0x40;
-const PLAYER_JUMP = -0x38;
+const GRAVITY_SLOW = 1;
+const GRAVITY_FAST = 5;
+const JUMP_FORCE = [-3.5, -3.625, -3.75, -4];
 
 const world = `
-################
-#              #
-#              #
-#              #
-#            ###
-#              #
-#              #
-#      ##      #
-#             ##
-##            ##
-##      #     ##
-##     #      ##
-##            ##
-################
+########################
+#                      #
+#                      #
+#                      #
+#                    ###
+#       ##             #
+#                      #
+#    ###########       #
+#                     ##
+##                    ##
+##      ###           ##
+##        ###         ##
+##                    ##
+########################
 `.trim().split('\n').map(n => n.split(''));
 
-const tileAttrAndQuad_OffsFlat = {
-  downLeft: [
-    // Not small or ducking moving downward - Left half
-    { y: 0x20, x: 0x04 },  // Ground left
-    { y: 0x20, x: 0x0B },  // Ground right
-    { y: 0x1B, x: 0x0E },  // In-front lower
-    { y: 0x0E, x: 0x0E },  // In-front upper
-  ],
-  downRight: [
-    // Not small or ducking moving downward - Right half
-    { y: 0x20, x: 0x04 },  // Ground left
-    { y: 0x20, x: 0x0B },  // Ground right
-    { y: 0x1B, x: 0x01 },  // In-front lower
-    { y: 0x0E, x: 0x01 },  // In-front upper
-  ],
-  upLeft: [
-    // Not small or ducking moving upward - Left half
-    { y: 0x06, x: 0x08 },  // Ground left
-    { y: 0x06, x: 0x08 },  // Ground right
-    { y: 0x1B, x: 0x0E },  // In-front lower
-    { y: 0x0E, x: 0x0E },  // In-front upper
-  ],
-  upRight: [
-    // Not small or ducking moving upward - Right half
-    { y: 0x06, x: 0x08 },  // Ground left
-    { y: 0x06, x: 0x08 },  // Ground right
-    { y: 0x1B, x: 0x01 },  // In-front lower
-    { y: 0x0E, x: 0x01 },  // In-front upper
-  ]
+const tileCollisionOffsets = {
+  big: {
+    downLeft: {
+      // Not small or ducking moving downward - Left half
+      vert: [
+        { x: 0x04, y: 0x20 },  // Ground left
+        { x: 0x0B, y: 0x20 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x0E, y: 0x1B },  // In-front lower
+        { x: 0x0E, y: 0x0E },  // In-front upper
+      ],
+    },
+    downRight: {
+      // Not small or ducking moving downward - Right half
+      vert: [
+        { x: 0x04, y: 0x20 },  // Ground left
+        { x: 0x0B, y: 0x20 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x01, y: 0x1B },  // In-front lower
+        { x: 0x01, y: 0x0E },  // In-front upper
+      ],
+    },
+    upLeft: {
+      // Not small or ducking moving upward - Left half
+      vert: [
+        { x: 0x08, y: 0x06 },  // Ground left
+        { x: 0x08, y: 0x06 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x0E, y: 0x1B },  // In-front lower
+        { x: 0x0E, y: 0x0E },  // In-front upper
+      ],
+    },
+    upRight: {
+      // Not small or ducking moving upward - Right half
+      vert: [
+        { x: 0x08, y: 0x06 },  // Ground left
+        { x: 0x08, y: 0x06 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x01, y: 0x1B },  // In-front lower
+        { x: 0x01, y: 0x0E },  // In-front upper
+      ],
+    },
+  },
+  small: {
+    downLeft: {
+      // Small or ducking moving downward - Left half
+      vert: [
+        { x: 0x04, y: 0x20 },  // Ground left
+        { x: 0x0B, y: 0x20 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x0D, y: 0x1B },  // In-front lower
+        { x: 0x0D, y: 0x14 },  // In-front upper
+      ],
+    },
+    downRight: {
+      // Small or ducking moving downward - Right half
+      vert: [
+        { x: 0x04, y: 0x20 },  // Ground left
+        { x: 0x0B, y: 0x20 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x02, y: 0x1B },  // In-front lower
+        { x: 0x02, y: 0x14 },  // In-front upper
+      ],
+    },
+    upLeft: {
+      // Small or ducking moving upward - Left half
+      vert: [
+        { x: 0x08, y: 0x10 },  // Ground left
+        { x: 0x08, y: 0x10 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x0D, y: 0x1B },  // In-front lower
+        { x: 0x0D, y: 0x14 },  // In-front upper
+      ],
+    },
+    upRight: {
+      // Small or ducking moving upward - Right half
+      vert: [
+        { x: 0x08, y: 0x10 },  // Ground left
+        { x: 0x08, y: 0x10 },  // Ground right
+      ],
+      horiz: [
+        { x: 0x02, y: 0x1B },  // In-front lower
+        { x: 0x02, y: 0x14 },  // In-front upper
+      ],
+    },
+  }
 };
 
-const tileAttrAndQuad_OffsFlat_Sm = {
-  downLeft: [
-    // Small or ducking moving downward - Left half
-    { y: 0x20, x: 0x04 },  // Ground left
-    { y: 0x20, x: 0x0B },  // Ground right
-    { y: 0x1B, x: 0x0D },  // In-front lower
-    { y: 0x14, x: 0x0D },  // In-front upper
-  ],
-  downRight: [
-    // Small or ducking moving downward - Right half
-    { y: 0x20, x: 0x04 },  // Ground left
-    { y: 0x20, x: 0x0B },  // Ground right
-    { y: 0x1B, x: 0x02 },  // In-front lower
-    { y: 0x14, x: 0x02 },  // In-front upper
-  ],
-  upLeft: [
-    // Small or ducking moving upward - Left half
-    { y: 0x10, x: 0x08 },  // Ground left
-    { y: 0x10, x: 0x08 },  // Ground right
-    { y: 0x1B, x: 0x0D },  // In-front lower
-    { y: 0x14, x: 0x0D },  // In-front upper
-  ],
-  upRight: [
-    // Small or ducking moving upward - Right half
-    { y: 0x10, x: 0x08 },  // Ground left
-    { y: 0x10, x: 0x08 },  // Ground right
-    { y: 0x1B, x: 0x02 },  // In-front lower
-    { y: 0x14, x: 0x02 },  // In-front upper
-  ]
-};
-
-const playerEdgeOffset = {
-  big: { left: 2, right: 14 },
-  small: { left: 3, right: 13 },
-};
-
-const jumpBoost = [0, 2, 4, 8];
-
-let drawFuncs = [];
 function tick() {
-  drawFuncs = [];
-
   if (hit.start) {
     playerIsBig = !playerIsBig;
   }
 
-  counterWiggle = (counterWiggle + 7) % 16;
-
-  // Player_Control
   if (!playerIsBig) {
     // disable any ducking
     playerIsDucking = false;
@@ -240,144 +347,113 @@ function tick() {
       input.down;
   }
 
-  const heightOffset = !playerIsBig || playerIsDucking
+  let heightOffset = !playerIsBig || playerIsDucking
     ? 20
     : 10;
-  const tileAbove = getPlayerTile(8, heightOffset, 0);
+  const tileAbove = getTileFromPlayer({ x: 8, y: heightOffset }, false);
 
-  let lowClearance = false;
-  if (tileAbove && !playerInAir) {
+  const lowClearance = tileAbove && !playerInAir;
+  if (lowClearance) {
     // player is stuck in wall
-    lowClearance = true;
     playerDX = 0;
     playerX++;
   }
 
-  Player_ApplyXVelocity();
-  let absDX = Math.abs(playerDX);
+  // advance player
+  playerX += Math.max(-4, Math.min(4, playerDX));
   if (playerInAir) {
-    Player_ApplyYVelocity();
+    playerY += Math.min(4, playerDY);
   }
 
-  const topSpeed = input.b
-    ? PLAYER_TOPRUNSPEED
-    : PLAYER_TOPWALKSPEED;
-  const frictionWhole = -1;
-  const frictionFrac = playerIsBig ? 2 : 6;
-  let accelWhole = frictionWhole;
-  let accelFrac = frictionFrac;
-  let moveAction = 'none';
-  if (!input.left && !input.right) {
+  // handle horizontal movement
+  const topSpeed = input.b ? 2.5 : 1.5;
+  const accelFric = playerIsBig ? 14 : 10;
+  const accelSkid = 32;
+  const accelNormal = 14;
+  const hitDir = input.left ? -1 : input.right ? 1 : 0;
+  if (hitDir === 0) {
     if (!playerInAir) {
       if (playerDX < 0) {
-        moveAction = 'left';
+        playerDX += accelFric / 256;
+        if (playerDX > 0) {
+          playerDX = 0;
+        }
       } else if (playerDX > 0) {
-        moveAction = 'right';
+        playerDX -= accelFric / 256;
+        if (playerDX < 0) {
+          playerDX = 0;
+        }
       }
     }
   } else {
-    const isSkidding =
-      (playerDX > 0 && input.left) ||
-      (playerDX < 0 && input.right);
-    if (isSkidding) {
-      accelWhole = 2;
-      accelFrac = 0;
-    } else {
-      accelWhole = 0;
-      accelFrac = 14;
-    }
-    if (isSkidding || absDX !== topSpeed) {
-      if (absDX > topSpeed) {
-        if (!playerInAir) {
-          accelWhole = frictionWhole;
-          accelFrac = frictionFrac;
-        }
-      }
-      if (input.right) {
-        moveAction = 'right';
-      } else { // must be pressing left
-        moveAction = 'left';
+    const absDX = Math.abs(playerDX)
+    if (
+      (playerDX > 0 && hitDir < 0) ||
+      (playerDX < 0 && hitDir > 0)
+    ) {
+      // player is voluntarily slowing down (skidding), so let them!
+      playerDX += hitDir * accelSkid / 256;
+    } else if (absDX < topSpeed) {
+      playerDX += hitDir * accelNormal / 256;
+    } else if (absDX > topSpeed) {
+      if (!playerInAir) {
+        playerDX -= hitDir * accelFric / 256;
       }
     }
   }
 
-  if (moveAction === 'left' || moveAction === 'right') {
-    if (moveAction === 'left') {
-      accelFrac = 16 - accelFrac;
-      if (accelFrac === 0) {
-        accelWhole = -accelWhole;
-      } else {
-        accelWhole = -accelWhole - 1;
-      }
-    }
-    if (counterWiggle + accelFrac >= 16) {
-      accelWhole++;
-    }
-    playerDX += accelWhole;
-  }
-
+  // handle vertical movement
   if (hit.a && !playerInAir) {
-    // jump!
-    const absDX = Math.abs(playerDX);
-    const absDXWhole = Math.floor(absDX / 16);
-    playerDY = PLAYER_JUMP - jumpBoost[absDXWhole];
-    playerInAir = 1;
+    const dx = Math.floor(Math.abs(playerDX));
+    playerDY = JUMP_FORCE[dx];
+    playerInAir = true;
   }
   if (playerInAir) {
-    let gravity = 5;
-    if (playerDY < -32 && input.a) {
-      gravity = 1;
+    if (playerDY < -2 && input.a) {
+      playerDY += GRAVITY_SLOW / 16;
+    } else {
+      playerDY += GRAVITY_FAST / 16;
     }
-    playerDY += gravity;
   }
 
-  // Player_DetectSolids
+  // collision detection setup
   const playerIsMovingUp = playerDY < 0;
-  const playerIsLeftHalf = (playerX & 0xf) < 8;
-  const tileAttrTableSize = !playerIsBig || playerIsDucking
-    ? tileAttrAndQuad_OffsFlat_Sm
-    : tileAttrAndQuad_OffsFlat;
-  const tileAttrTable = playerIsMovingUp
+  const playerIsLeftHalf = (playerX % 16) < 8;
+  const colOffsets = !playerIsBig || playerIsDucking
+    ? tileCollisionOffsets.small
+    : tileCollisionOffsets.big;
+  const { vert: tVert, horiz: tHoriz } = playerIsMovingUp
     ? (
       playerIsLeftHalf
-      ? tileAttrTableSize.upLeft
-      : tileAttrTableSize.upRight
+      ? colOffsets.upLeft
+      : colOffsets.upRight
       )
     : (
       playerIsLeftHalf
-      ? tileAttrTableSize.downLeft
-      : tileAttrTableSize.downRight
+      ? colOffsets.downLeft
+      : colOffsets.downRight
       );
-  const lowerHitOffset = tileAttrTable[0].y;
-  const lowerClearOffset = tileAttrTable[2].y;
-  let levelTileGndL = [
-    0, // Level_Tile_GndL
-    0, // Level_Tile_GndR
-    0, // Level_Tile_InFL
-    0, // Level_Tile_InFU
-  ];
-  for (let x = 0; x < 4; x++) {
-    levelTileGndL[x] = getPlayerTile(
-      tileAttrTable[x].x,
-      tileAttrTable[x].y,
-      x
-    );
-  }
-  // Wall hit detection
-  if (
-    (levelTileGndL[2] || levelTileGndL[3]) &&
-    !lowClearance
-  ) {
+
+  const solidVert1 = getTileFromPlayer(tVert[0], false);
+  const solidVert2 = getTileFromPlayer(tVert[1], false);
+  const solidVert = solidVert1 || solidVert2;
+
+  const solidHoriz1 = getTileFromPlayer(tHoriz[0], true);
+  const solidHoriz2 = getTileFromPlayer(tHoriz[1], true);
+  const solidHoriz = solidHoriz1 || solidHoriz2;
+
+  // horizontal collision detection
+  const leftEdgeOffset = playerIsBig ? 2 : 3;
+  const rightEdgeOffset = playerIsBig ? 14 : 13;
+  if (solidHoriz && !lowClearance) {
     const dir = playerIsLeftHalf ? -1 : 1;
-    const edgeOffsetTable = playerIsBig
-      ? playerEdgeOffset.big
-      : playerEdgeOffset.small;
     const edx = playerIsLeftHalf
-      ? edgeOffsetTable.right
-      : edgeOffsetTable.left;
+      ? leftEdgeOffset
+      : rightEdgeOffset;
     const edgeX = playerX + edx;
-    const localX = edgeX & 0xf;
-    if (localX !== 0) {
+    const localX = edgeX % 16;
+    if (Math.floor(localX) !== 0) {
+      // eject player from wall
       playerX += dir;
       if (
         (playerDX < 0 && dir === 1) ||
@@ -388,149 +464,58 @@ function tick() {
     }
   }
 
+  // vertical collision detection
   if (playerDY >= 0 || !playerInAir) {
-    if (levelTileGndL[0] || levelTileGndL[1]) {
+    if (solidVert) {
       // on solid ground
-      const localY = playerY & 0xf;
+      const localY = Math.floor(playerY) % 16;
       if (localY < 6) {
+        // snap to ground
         if (localY === 1) {
           playerY--;
         } else if (localY !== 0) {
           playerY -= 2;
         }
-        playerInAir = 0;
+        playerInAir = false;
         playerDY = 0;
       }
     } else if (!playerInAir) {
       // walked off ledge, so now in air
       playerDY = 0;
-      playerInAir = 1;
+      playerInAir = true;
     }
   } else {
     // moving up or in air
-    if (levelTileGndL[0] || levelTileGndL[1]) {
-      // landed on ground or hit ceiling
-      playerDY = 1;
+    heightOffset = tVert[0].y;
+    if (solidVert) { // hit head on something
+      playerDY = GRAVITY_SLOW / 16;
     }
   }
 
-  // draw screen
-  ctx.fillStyle = '#111';
-  ctx.fillRect(0, 0, 256, 224);
-
-  for (let y = 0; y < world.length; y++) {
-    const row = world[y];
-    for (let x = 0; x < row.length; x++) {
-      const ch = row[x];
-      const isSolid = ch === '#';
-      ctx.fillStyle = isSolid ? '#aaa' : '#333';
-      ctx.beginPath();
-      ctx.rect(
-        x * 16,
-        y * 16,
-        16, 16
-      );
-      ctx.fill();
-    }
-  }
-
-  const eo = playerIsBig
-    ? playerEdgeOffset.big
-    : playerEdgeOffset.small;
-  if (lowerClearOffset > lowerHitOffset) {
-    ctx.fillStyle = '#09c';
-    ctx.fillRect(
-      playerX + eo.left,
-      playerY + lowerHitOffset,
-      eo.right - eo.left,
-      lowerClearOffset - lowerHitOffset
-    );
-  }
-  ctx.fillStyle = '#0ff';
-  ctx.fillRect(
-    playerX + eo.left,
-    playerY + heightOffset,
-    eo.right - eo.left,
-    lowerHitOffset - heightOffset
-  );
-  for (const f of drawFuncs) {
-    f();
-  }
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(
+  drawScreen({
     playerX,
     playerY,
-    1, 1
-  );
-}
-
-function Player_ApplyXVelocity() {
-  const dx = Math.max(-PLAYER_MAXSPEED,
-    Math.min(PLAYER_MAXSPEED, playerDX)
-  );
-  const whole = dx >> 4;
-  const frac = dx & 0xf;
-  playerX += whole;
-  playerXFrac += frac;
-  if (playerXFrac < 0) {
-    playerX--;
-    playerXFrac += 16;
-  } else if (playerXFrac >= 16) {
-    playerX++;
-    playerXFrac -= 16;
-  }
-}
-
-function Player_ApplyYVelocity() {
-  const dy = Math.min(FALLRATE_MAX, playerDY);
-  const whole = dy >> 4;
-  const frac = dy & 0xf;
-  playerY += whole;
-  playerYFrac += frac;
-  if (playerYFrac < 0) {
-    playerY--;
-    playerYFrac += 16;
-  } else if (playerYFrac >= 16) {
-    playerY++;
-    playerYFrac -= 16;
-  }
-}
-
-function getPlayerTile(dx, dy, i) {
-  const sx = playerX + dx;
-  const sy = playerY + dy;
-  if (sy < 0) {
-    return 0;
-  }
-  const ty = sy >> 4;
-  const row = world[ty];
-  if (sx < 0 || sx >= row.length * 16) {
-    return 1;
-  }
-  const tx = sx >> 4;
-  highlightTile(tx, ty, i);
-  return row[tx] === '#' ? 1 : 0;
-}
-
-function highlightTile(tx, ty, i) {
-  drawFuncs.push(() => {
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(
-      tx * 16 + 0.5 + 0.5/4,
-      ty * 16 + 0.5 + 0.5/4,
-      15, 15
-    );
-    ctx.strokeStyle = ([
-      '#0ff',
-      '#f0f',
-      '#0f0',
-      '#f00',
-    ])[i % 4];
-    ctx.globalAlpha = 0.25;
-    ctx.stroke();
-    ctx.restore();
+    leftEdgeOffset,
+    rightEdgeOffset,
+    heightOffset,
   });
+}
+
+function getTileFromPlayer({ x: dx, y: dy }, horiz) {
+  const sx = Math.floor(playerX) + dx;
+  const sy = Math.floor(playerY) + dy;
+  highlightPoint(sx, sy, horiz);
+  const tx = Math.floor(sx / 16);
+  const ty = Math.floor(sy / 16);
+  if (ty < 0) {
+    return false;
+  }
+  const row = world[ty];
+  if (tx < 0 || tx >= row.length) {
+    return true;
+  }
+  //highlightTile(tx, ty, horiz);
+  return row[tx] === '#';
 }
 
 start();
