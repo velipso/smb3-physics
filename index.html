@@ -114,20 +114,15 @@ window.addEventListener('blur', onBlur);
 
 let targetFPS = 60;
 
-let cameraX = 0;
-let cameraY = 0;
 let playerX = 16;
 let playerXFrac = 0;
 let playerY = 32;
 let playerYFrac = 0;
 let playerDX = 0;
 let playerDY = 0;
-let playerHitCeiling = 0;
 let playerInAir = 0;
-let playerInAirOld = 0;
 let playerIsBig = true;
 let playerIsDucking = false;
-let playerPower = 0;
 let counterWiggle = 0;
 
 const FALLRATE_MAX = 0x40;
@@ -144,12 +139,12 @@ const world = `
 #            ###
 #              #
 #              #
-#          ##  #
-#              #
-#              #
-#       ###    #
-#      ###     #
-#        #     #
+#      ##      #
+#             ##
+##            ##
+##      #     ##
+##     #      ##
+##            ##
 ################
 `.trim().split('\n').map(n => n.split(''));
 
@@ -216,37 +211,23 @@ const tileAttrAndQuad_OffsFlat_Sm = {
 };
 
 const playerEdgeOffset = {
-  big: {
-    left: 2,
-    right: 14
-  },
-  small: {
-    left: 3,
-    right: 13
-  }
+  big: { left: 2, right: 14 },
+  small: { left: 3, right: 13 },
 };
 
-const horizAccelTable = {
-  small: {
-    friction: [0xff, 0x60],
-    normal: [0, 0xe0],
-    skid: [2, 0x00],
-  },
-  big: {
-    friction: [0xff, 0x20],
-    normal: [0, 0xe0],
-    skid: [2, 0x00],
-  }
-};
+const jumpBoost = [0, 2, 4, 8];
 
 let drawFuncs = [];
 function tick() {
   drawFuncs = [];
 
-  counterWiggle = ((counterWiggle & 0xf0) - 0x90) & 0xff;
+  if (hit.start) {
+    playerIsBig = !playerIsBig;
+  }
+
+  counterWiggle = (counterWiggle + 7) % 16;
 
   // Player_Control
-  playerInAirOld = playerInAir;
   if (!playerIsBig) {
     // disable any ducking
     playerIsDucking = false;
@@ -259,12 +240,10 @@ function tick() {
       input.down;
   }
 
-  const tileAbove = getPlayerTile(
-    8,
-    !playerIsBig || playerIsDucking ? 20 : 10,
-    0
-  );
-  // Level_Tile_Head, Temp_Var1, Level_Tile_GndL[0]
+  const heightOffset = !playerIsBig || playerIsDucking
+    ? 20
+    : 10;
+  const tileAbove = getPlayerTile(8, heightOffset, 0);
 
   let lowClearance = false;
   if (tileAbove && !playerInAir) {
@@ -276,28 +255,17 @@ function tick() {
 
   Player_ApplyXVelocity();
   let absDX = Math.abs(playerDX);
-  let moveLR = 0;
-  if (playerDX < 0) {
-    moveLR = 1;
-  } else if (playerDX > 0) {
-    moveLR = 2;
-  }
   if (playerInAir) {
     Player_ApplyYVelocity();
   }
 
-  let runFlag = false;
-  let topSpeed = PLAYER_TOPWALKSPEED;
-  if (input.b) {
-    if (!playerInAir && absDX >= PLAYER_TOPRUNSPEED) {
-      runFlag = true;
-    }
-    topSpeed = PLAYER_TOPRUNSPEED;
-  }
-  const accelTable = playerIsBig
-    ? horizAccelTable.big
-    : horizAccelTable.small;
-  let accel = 'friction';
+  const topSpeed = input.b
+    ? PLAYER_TOPRUNSPEED
+    : PLAYER_TOPWALKSPEED;
+  const frictionWhole = -1;
+  const frictionFrac = playerIsBig ? 2 : 6;
+  let accelWhole = frictionWhole;
+  let accelFrac = frictionFrac;
   let moveAction = 'none';
   if (!input.left && !input.right) {
     if (!playerInAir) {
@@ -308,15 +276,21 @@ function tick() {
       }
     }
   } else {
-    accel =
+    const isSkidding =
       (playerDX > 0 && input.left) ||
-      (playerDX < 0 && input.right)
-      ? 'skid'
-      : 'normal';
-    if (accel !== 'normal' || absDX !== topSpeed) {
+      (playerDX < 0 && input.right);
+    if (isSkidding) {
+      accelWhole = 2;
+      accelFrac = 0;
+    } else {
+      accelWhole = 0;
+      accelFrac = 14;
+    }
+    if (isSkidding || absDX !== topSpeed) {
       if (absDX > topSpeed) {
         if (!playerInAir) {
-          accel = 'friction';
+          accelWhole = frictionWhole;
+          accelFrac = frictionFrac;
         }
       }
       if (input.right) {
@@ -328,40 +302,36 @@ function tick() {
   }
 
   if (moveAction === 'left' || moveAction === 'right') {
-    let [whole, fraction] = accelTable[accel];
     if (moveAction === 'left') {
-      fraction = (-fraction) & 0xff;
-      whole ^= 0xff;
-      if (fraction === 0) {
-        whole = (whole + 1) & 0xff;
+      accelFrac = 16 - accelFrac;
+      if (accelFrac === 0) {
+        accelWhole = -accelWhole;
+      } else {
+        accelWhole = -accelWhole - 1;
       }
     }
-    if (counterWiggle + fraction > 255) {
-      whole = (whole + 1) & 0xff;
+    if (counterWiggle + accelFrac >= 16) {
+      accelWhole++;
     }
-    if (whole >= 128) {
-      whole -= 256;
-    }
-    playerDX += whole;
+    playerDX += accelWhole;
   }
 
   if (hit.a && !playerInAir) {
     // jump!
     const absDX = Math.abs(playerDX);
-    const absDXWhole = absDX >> 4;
-    playerDY = PLAYER_JUMP - ([0, 2, 4, 8])[absDXWhole];
+    const absDXWhole = Math.floor(absDX / 16);
+    playerDY = PLAYER_JUMP - jumpBoost[absDXWhole];
     playerInAir = 1;
   }
   if (playerInAir) {
     let gravity = 5;
-    if (playerDY < -0x20 && input.a) {
+    if (playerDY < -32 && input.a) {
       gravity = 1;
     }
     playerDY += gravity;
   }
 
   // Player_DetectSolids
-  playerHitCeiling = 0;
   const playerIsMovingUp = playerDY < 0;
   const playerIsLeftHalf = (playerX & 0xf) < 8;
   const tileAttrTableSize = !playerIsBig || playerIsDucking
@@ -378,6 +348,8 @@ function tick() {
       ? tileAttrTableSize.downLeft
       : tileAttrTableSize.downRight
       );
+  const lowerHitOffset = tileAttrTable[0].y;
+  const lowerClearOffset = tileAttrTable[2].y;
   let levelTileGndL = [
     0, // Level_Tile_GndL
     0, // Level_Tile_GndR
@@ -393,7 +365,7 @@ function tick() {
   }
   // Wall hit detection
   if (
-    tilePairIsSolid(levelTileGndL, 2) &&
+    (levelTileGndL[2] || levelTileGndL[3]) &&
     !lowClearance
   ) {
     const dir = playerIsLeftHalf ? -1 : 1;
@@ -436,9 +408,8 @@ function tick() {
     }
   } else {
     // moving up or in air
-    if (tilePairIsSolid(levelTileGndL, 0)) {
+    if (levelTileGndL[0] || levelTileGndL[1]) {
       // landed on ground or hit ceiling
-      playerHitCeiling = 1;
       playerDY = 1;
     }
   }
@@ -455,30 +426,40 @@ function tick() {
       ctx.fillStyle = isSolid ? '#aaa' : '#333';
       ctx.beginPath();
       ctx.rect(
-        x * 16 - cameraX,
-        y * 16 - cameraY,
+        x * 16,
+        y * 16,
         16, 16
       );
       ctx.fill();
     }
   }
 
-  ctx.fillStyle = '#0ff';
   const eo = playerIsBig
     ? playerEdgeOffset.big
     : playerEdgeOffset.small;
+  if (lowerClearOffset > lowerHitOffset) {
+    ctx.fillStyle = '#09c';
+    ctx.fillRect(
+      playerX + eo.left,
+      playerY + lowerHitOffset,
+      eo.right - eo.left,
+      lowerClearOffset - lowerHitOffset
+    );
+  }
+  ctx.fillStyle = '#0ff';
   ctx.fillRect(
-    playerX - cameraX + eo.left,
-    playerY - cameraY,
-    eo.right - eo.left, 8
+    playerX + eo.left,
+    playerY + heightOffset,
+    eo.right - eo.left,
+    lowerHitOffset - heightOffset
   );
   for (const f of drawFuncs) {
     f();
   }
   ctx.fillStyle = '#fff';
   ctx.fillRect(
-    playerX - cameraX,
-    playerY - cameraY,
+    playerX,
+    playerY,
     1, 1
   );
 }
@@ -515,10 +496,6 @@ function Player_ApplyYVelocity() {
   }
 }
 
-function tilePairIsSolid(tiles, i) {
-  return tiles[i] > 0 || tiles[i + 1] > 0;
-}
-
 function getPlayerTile(dx, dy, i) {
   const sx = playerX + dx;
   const sy = playerY + dy;
@@ -540,8 +517,8 @@ function highlightTile(tx, ty, i) {
     ctx.save();
     ctx.beginPath();
     ctx.rect(
-      tx * 16 - cameraX + 0.5 + 0.5/4,
-      ty * 16 - cameraY + 0.5 + 0.5/4,
+      tx * 16 + 0.5 + 0.5/4,
+      ty * 16 + 0.5 + 0.5/4,
       15, 15
     );
     ctx.strokeStyle = ([
@@ -550,7 +527,7 @@ function highlightTile(tx, ty, i) {
       '#0f0',
       '#f00',
     ])[i % 4];
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.25;
     ctx.stroke();
     ctx.restore();
   });
