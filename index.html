@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title>SMB3 Physics</title>
+  <style>
+body, html {
+  background-color: #000;
+  margin: 0;
+  padding: 0;
+}
+
+#cnv {
+  display: block;
+  width: 512px;
+  height: 448px;
+  margin: 20px auto;
+  border: 1px solid #444;
+  border-radius: 5px;
+}
+  </style>
+</head>
+<body>
+  <canvas id="cnv" width="1024" height="896"></canvas>
+  <script>
+const cnv = document.getElementById('cnv');
+const ctx = cnv.getContext('2d');
+ctx.setTransform(4, 0, 0, 4, 0, 0);
+const inputEmpty = () => ({
+  up: false,
+  right: false,
+  down: false,
+  left: false,
+  a: false,
+  b: false,
+  start: false,
+  select: false,
+});
+const inputKeys = ['up', 'right', 'down', 'left', 'a', 'b', 'start', 'select'];
+const keyboardMap = {
+  ArrowUp: 'up',
+  ArrowRight: 'right',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  Enter: 'start',
+  Backspace: 'select',
+  z: 'b',
+  x: 'a',
+  ' ': 'a',
+};
+let input = inputEmpty();
+let hit = inputEmpty();
+function start() {
+  let frameCount = 0;
+  let nextFrame = Date.now();
+  const run = () => {
+    const now = Date.now();
+    let i = 0;
+    while (nextFrame < now) {
+      tick();
+      hit = inputEmpty();
+      frameCount++;
+      nextFrame += 1000 / targetFPS;
+      i++;
+      if (i >= 4) {
+        // too slow :-(
+        nextFrame = Date.now();
+      }
+    }
+    setTimeout(run, 0);
+  }
+  run();
+}
+
+function onKey(key, down){
+  const k = keyboardMap[key];
+  if (k) {
+    if (!input[k] && down) {
+      hit[k] = true;
+    }
+    input[k] = down;
+    return true;
+  }
+  return false;
+}
+
+function onKeyDown(e){
+  if (onKey(e.key, true)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return false;
+  }
+}
+
+function onKeyUp(e){
+  if (onKey(e.key, false)) {
+    e.preventDefault();
+    e.stopPropagation();
+    return false;
+  }
+}
+
+function onBlur(){
+  input = inputEmpty();
+  hit = inputEmpty();
+}
+
+window.addEventListener('keydown', onKeyDown);
+window.addEventListener('keyup', onKeyUp);
+window.addEventListener('blur', onBlur);
+
+//
+// Main code
+//
+
+let targetFPS = 60;
+
+let cameraX = 0;
+let cameraY = 0;
+let playerX = 16;
+let playerXFrac = 0;
+let playerY = 32;
+let playerYFrac = 0;
+let playerDX = 0;
+let playerDY = 0;
+let playerHitCeiling = 0;
+let playerInAir = 0;
+let playerInAirOld = 0;
+let playerIsBig = true;
+let playerIsDucking = false;
+let playerPower = 0;
+let counterWiggle = 0;
+
+const FALLRATE_MAX = 0x40;
+const PLAYER_TOPWALKSPEED = 0x18;
+const PLAYER_TOPRUNSPEED = 0x28;
+const PLAYER_MAXSPEED = 0x40;
+const PLAYER_JUMP = -0x38;
+
+const world = `
+################
+#              #
+#              #
+#              #
+#            ###
+#              #
+#              #
+#          ##  #
+#              #
+#              #
+#       ###    #
+#      ###     #
+#        #     #
+################
+`.trim().split('\n').map(n => n.split(''));
+
+const tileAttrAndQuad_OffsFlat = {
+  downLeft: [
+    // Not small or ducking moving downward - Left half
+    { y: 0x20, x: 0x04 },  // Ground left
+    { y: 0x20, x: 0x0B },  // Ground right
+    { y: 0x1B, x: 0x0E },  // In-front lower
+    { y: 0x0E, x: 0x0E },  // In-front upper
+  ],
+  downRight: [
+    // Not small or ducking moving downward - Right half
+    { y: 0x20, x: 0x04 },  // Ground left
+    { y: 0x20, x: 0x0B },  // Ground right
+    { y: 0x1B, x: 0x01 },  // In-front lower
+    { y: 0x0E, x: 0x01 },  // In-front upper
+  ],
+  upLeft: [
+    // Not small or ducking moving upward - Left half
+    { y: 0x06, x: 0x08 },  // Ground left
+    { y: 0x06, x: 0x08 },  // Ground right
+    { y: 0x1B, x: 0x0E },  // In-front lower
+    { y: 0x0E, x: 0x0E },  // In-front upper
+  ],
+  upRight: [
+    // Not small or ducking moving upward - Right half
+    { y: 0x06, x: 0x08 },  // Ground left
+    { y: 0x06, x: 0x08 },  // Ground right
+    { y: 0x1B, x: 0x01 },  // In-front lower
+    { y: 0x0E, x: 0x01 },  // In-front upper
+  ]
+};
+
+const tileAttrAndQuad_OffsFlat_Sm = {
+  downLeft: [
+    // Small or ducking moving downward - Left half
+    { y: 0x20, x: 0x04 },  // Ground left
+    { y: 0x20, x: 0x0B },  // Ground right
+    { y: 0x1B, x: 0x0D },  // In-front lower
+    { y: 0x14, x: 0x0D },  // In-front upper
+  ],
+  downRight: [
+    // Small or ducking moving downward - Right half
+    { y: 0x20, x: 0x04 },  // Ground left
+    { y: 0x20, x: 0x0B },  // Ground right
+    { y: 0x1B, x: 0x02 },  // In-front lower
+    { y: 0x14, x: 0x02 },  // In-front upper
+  ],
+  upLeft: [
+    // Small or ducking moving upward - Left half
+    { y: 0x10, x: 0x08 },  // Ground left
+    { y: 0x10, x: 0x08 },  // Ground right
+    { y: 0x1B, x: 0x0D },  // In-front lower
+    { y: 0x14, x: 0x0D },  // In-front upper
+  ],
+  upRight: [
+    // Small or ducking moving upward - Right half
+    { y: 0x10, x: 0x08 },  // Ground left
+    { y: 0x10, x: 0x08 },  // Ground right
+    { y: 0x1B, x: 0x02 },  // In-front lower
+    { y: 0x14, x: 0x02 },  // In-front upper
+  ]
+};
+
+const playerEdgeOffset = {
+  big: {
+    left: 2,
+    right: 14
+  },
+  small: {
+    left: 3,
+    right: 13
+  }
+};
+
+const horizAccelTable = {
+  small: {
+    friction: [0xff, 0x60],
+    normal: [0, 0xe0],
+    skid: [2, 0x00],
+  },
+  big: {
+    friction: [0xff, 0x20],
+    normal: [0, 0xe0],
+    skid: [2, 0x00],
+  }
+};
+
+let drawFuncs = [];
+function tick() {
+  drawFuncs = [];
+
+  counterWiggle = ((counterWiggle & 0xf0) - 0x90) & 0xff;
+
+  // Player_Control
+  playerInAirOld = playerInAir;
+  if (!playerIsBig) {
+    // disable any ducking
+    playerIsDucking = false;
+  } else if (!playerInAir) {
+    // set player ducking if they hit ONLY down
+    playerIsDucking =
+      !input.left &&
+      !input.right &&
+      !input.up &&
+      input.down;
+  }
+
+  const tileAbove = getPlayerTile(
+    8,
+    !playerIsBig || playerIsDucking ? 20 : 10,
+    0
+  );
+  // Level_Tile_Head, Temp_Var1, Level_Tile_GndL[0]
+
+  let lowClearance = false;
+  if (tileAbove && !playerInAir) {
+    // player is stuck in wall
+    lowClearance = true;
+    playerDX = 0;
+    playerX++;
+  }
+
+  Player_ApplyXVelocity();
+  let absDX = Math.abs(playerDX);
+  let moveLR = 0;
+  if (playerDX < 0) {
+    moveLR = 1;
+  } else if (playerDX > 0) {
+    moveLR = 2;
+  }
+  if (playerInAir) {
+    Player_ApplyYVelocity();
+  }
+
+  let runFlag = false;
+  let topSpeed = PLAYER_TOPWALKSPEED;
+  if (input.b) {
+    if (!playerInAir && absDX >= PLAYER_TOPRUNSPEED) {
+      runFlag = true;
+    }
+    topSpeed = PLAYER_TOPRUNSPEED;
+  }
+  const accelTable = playerIsBig
+    ? horizAccelTable.big
+    : horizAccelTable.small;
+  let accel = 'friction';
+  let moveAction = 'none';
+  if (!input.left && !input.right) {
+    if (!playerInAir) {
+      if (playerDX < 0) {
+        moveAction = 'left';
+      } else if (playerDX > 0) {
+        moveAction = 'right';
+      }
+    }
+  } else {
+    accel =
+      (playerDX > 0 && input.left) ||
+      (playerDX < 0 && input.right)
+      ? 'skid'
+      : 'normal';
+    if (accel !== 'normal' || absDX !== topSpeed) {
+      if (absDX > topSpeed) {
+        if (!playerInAir) {
+          accel = 'friction';
+        }
+      }
+      if (input.right) {
+        moveAction = 'right';
+      } else { // must be pressing left
+        moveAction = 'left';
+      }
+    }
+  }
+
+  if (moveAction === 'left' || moveAction === 'right') {
+    let [whole, fraction] = accelTable[accel];
+    if (moveAction === 'left') {
+      fraction = (-fraction) & 0xff;
+      whole ^= 0xff;
+      if (fraction === 0) {
+        whole = (whole + 1) & 0xff;
+      }
+    }
+    if (counterWiggle + fraction > 255) {
+      whole = (whole + 1) & 0xff;
+    }
+    if (whole >= 128) {
+      whole -= 256;
+    }
+    playerDX += whole;
+  }
+
+  if (hit.a && !playerInAir) {
+    // jump!
+    const absDX = Math.abs(playerDX);
+    const absDXWhole = absDX >> 4;
+    playerDY = PLAYER_JUMP - ([0, 2, 4, 8])[absDXWhole];
+    playerInAir = 1;
+  }
+  if (playerInAir) {
+    let gravity = 5;
+    if (playerDY < -0x20 && input.a) {
+      gravity = 1;
+    }
+    playerDY += gravity;
+  }
+
+  // Player_DetectSolids
+  playerHitCeiling = 0;
+  const playerIsMovingUp = playerDY < 0;
+  const playerIsLeftHalf = (playerX & 0xf) < 8;
+  const tileAttrTableSize = !playerIsBig || playerIsDucking
+    ? tileAttrAndQuad_OffsFlat_Sm
+    : tileAttrAndQuad_OffsFlat;
+  const tileAttrTable = playerIsMovingUp
+    ? (
+      playerIsLeftHalf
+      ? tileAttrTableSize.upLeft
+      : tileAttrTableSize.upRight
+      )
+    : (
+      playerIsLeftHalf
+      ? tileAttrTableSize.downLeft
+      : tileAttrTableSize.downRight
+      );
+  let levelTileGndL = [
+    0, // Level_Tile_GndL
+    0, // Level_Tile_GndR
+    0, // Level_Tile_InFL
+    0, // Level_Tile_InFU
+  ];
+  for (let x = 0; x < 4; x++) {
+    levelTileGndL[x] = getPlayerTile(
+      tileAttrTable[x].x,
+      tileAttrTable[x].y,
+      x
+    );
+  }
+  // Wall hit detection
+  if (
+    tilePairIsSolid(levelTileGndL, 2) &&
+    !lowClearance
+  ) {
+    const dir = playerIsLeftHalf ? -1 : 1;
+    const edgeOffsetTable = playerIsBig
+      ? playerEdgeOffset.big
+      : playerEdgeOffset.small;
+    const edx = playerIsLeftHalf
+      ? edgeOffsetTable.right
+      : edgeOffsetTable.left;
+    const edgeX = playerX + edx;
+    const localX = edgeX & 0xf;
+    if (localX !== 0) {
+      playerX += dir;
+      if (
+        (playerDX < 0 && dir === 1) ||
+        (playerDX >= 0 && dir === -1)
+      ) {
+        playerDX = 0;
+      }
+    }
+  }
+
+  if (playerDY >= 0 || !playerInAir) {
+    if (levelTileGndL[0] || levelTileGndL[1]) {
+      // on solid ground
+      const localY = playerY & 0xf;
+      if (localY < 6) {
+        if (localY === 1) {
+          playerY--;
+        } else if (localY !== 0) {
+          playerY -= 2;
+        }
+        playerInAir = 0;
+        playerDY = 0;
+      }
+    } else if (!playerInAir) {
+      // walked off ledge, so now in air
+      playerDY = 0;
+      playerInAir = 1;
+    }
+  } else {
+    // moving up or in air
+    if (tilePairIsSolid(levelTileGndL, 0)) {
+      // landed on ground or hit ceiling
+      playerHitCeiling = 1;
+      playerDY = 1;
+    }
+  }
+
+  // draw screen
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, 256, 224);
+
+  for (let y = 0; y < world.length; y++) {
+    const row = world[y];
+    for (let x = 0; x < row.length; x++) {
+      const ch = row[x];
+      const isSolid = ch === '#';
+      ctx.fillStyle = isSolid ? '#aaa' : '#333';
+      ctx.beginPath();
+      ctx.rect(
+        x * 16 - cameraX,
+        y * 16 - cameraY,
+        16, 16
+      );
+      ctx.fill();
+    }
+  }
+
+  ctx.fillStyle = '#0ff';
+  const eo = playerIsBig
+    ? playerEdgeOffset.big
+    : playerEdgeOffset.small;
+  ctx.fillRect(
+    playerX - cameraX + eo.left,
+    playerY - cameraY,
+    eo.right - eo.left, 8
+  );
+  for (const f of drawFuncs) {
+    f();
+  }
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(
+    playerX - cameraX,
+    playerY - cameraY,
+    1, 1
+  );
+}
+
+function Player_ApplyXVelocity() {
+  const dx = Math.max(-PLAYER_MAXSPEED,
+    Math.min(PLAYER_MAXSPEED, playerDX)
+  );
+  const whole = dx >> 4;
+  const frac = dx & 0xf;
+  playerX += whole;
+  playerXFrac += frac;
+  if (playerXFrac < 0) {
+    playerX--;
+    playerXFrac += 16;
+  } else if (playerXFrac >= 16) {
+    playerX++;
+    playerXFrac -= 16;
+  }
+}
+
+function Player_ApplyYVelocity() {
+  const dy = Math.min(FALLRATE_MAX, playerDY);
+  const whole = dy >> 4;
+  const frac = dy & 0xf;
+  playerY += whole;
+  playerYFrac += frac;
+  if (playerYFrac < 0) {
+    playerY--;
+    playerYFrac += 16;
+  } else if (playerYFrac >= 16) {
+    playerY++;
+    playerYFrac -= 16;
+  }
+}
+
+function tilePairIsSolid(tiles, i) {
+  return tiles[i] > 0 || tiles[i + 1] > 0;
+}
+
+function getPlayerTile(dx, dy, i) {
+  const sx = playerX + dx;
+  const sy = playerY + dy;
+  if (sy < 0) {
+    return 0;
+  }
+  const ty = sy >> 4;
+  const row = world[ty];
+  if (sx < 0 || sx >= row.length * 16) {
+    return 1;
+  }
+  const tx = sx >> 4;
+  highlightTile(tx, ty, i);
+  return row[tx] === '#' ? 1 : 0;
+}
+
+function highlightTile(tx, ty, i) {
+  drawFuncs.push(() => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(
+      tx * 16 - cameraX + 0.5 + 0.5/4,
+      ty * 16 - cameraY + 0.5 + 0.5/4,
+      15, 15
+    );
+    ctx.strokeStyle = ([
+      '#0ff',
+      '#f0f',
+      '#0f0',
+      '#f00',
+    ])[i % 4];
+    ctx.globalAlpha = 0.5;
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+start();
+  </script>
+</body>
+</html>
