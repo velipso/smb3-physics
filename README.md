@@ -12,7 +12,7 @@ movement into more readable JavaScript.
 
 Check out the demo here:
 
-[Play with SMB3 Physics](https://raw.githack.com/velipso/smb3-physics/main/index.html)
+[Play with SMB3 Physics](https://htmlpreview.github.io/?https://github.com/velipso/smb3-physics/blob/main/index.html)
 
 And read the JavaScript source:
 
