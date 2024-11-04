@@ -29,11 +29,35 @@ a:hover, a:active {
   margin: 20px auto;
   border-radius: 5px;
 }
+
+button {
+  width: 70px;
+  font-size: 15px;
+  font-family: monospace;
+}
   </style>
 </head>
 <body>
   <canvas id="cnv" width="1536" height="896"></canvas>
   <p>Controls: Arrow keys, X (Jump), Z (Run), Enter (Size), Mouse (Draw)</p>
+  <p>
+    Speed:
+    <button type="button" onClick="targetFPS=15">
+      0.25x
+    </button>
+    <button type="button" onClick="targetFPS=30">
+      0.5x
+    </button>
+    <button type="button" onClick="targetFPS=45">
+      0.75x
+    </button>
+    <button type="button" onClick="targetFPS=60">
+      1x
+    </button>
+    <button type="button" onClick="targetFPS=90">
+      1.5x
+    </button>
+  </p>
   <p>SMB3 Physics <a href="https://github.com/velipso/smb3-physics">Source Code</a> /
     <a href="https://sean.fun/">Home</a></p>
   <p>Based on <a href="http://www.sonicepoch.com/sm3mix/">Southbird</a>
@@ -245,7 +269,7 @@ cnv.addEventListener('mouseup', (e) => {
 // Main code
 //
 
-let targetFPS = 60;
+var targetFPS = 60;
 
 let playerX = 20;
 let playerY = 32;
