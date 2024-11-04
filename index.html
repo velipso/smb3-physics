@@ -33,7 +33,7 @@ a:hover, a:active {
 </head>
 <body>
   <canvas id="cnv" width="1536" height="896"></canvas>
-  <p>Controls: Arrow keys, X (Jump), Z (Run), Enter (Size)</p>
+  <p>Controls: Arrow keys, X (Jump), Z (Run), Enter (Size), Mouse (Draw)</p>
   <p>SMB3 Physics <a href="https://github.com/velipso/smb3-physics">Source Code</a> /
     <a href="https://sean.fun/">Home</a></p>
   <p>Based on <a href="http://www.sonicepoch.com/sm3mix/">Southbird</a>
@@ -41,7 +41,10 @@ a:hover, a:active {
   <script>
 const cnv = document.getElementById('cnv');
 const ctx = cnv.getContext('2d');
-ctx.setTransform(4, 0, 0, 4, 0, 0);
+const dpr = 4;
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+let mpos = [-1, -1];
+let mdown = 0;
 const inputEmpty = () => ({
   up: false,
   right: false,
@@ -138,6 +141,10 @@ function drawScreen({
   }
   ctx.fillStyle = '#fff';
   ctx.fillRect(Math.floor(playerX), Math.floor(playerY), 1, 1);
+  ctx.strokeStyle = '#ddd';
+  ctx.beginPath();
+  ctx.rect(mpos[0] * 16, mpos[1] * 16, 16, 16);
+  ctx.stroke();
 }
 
 function start() {
@@ -196,9 +203,43 @@ function onBlur(){
   hit = inputEmpty();
 }
 
+function mousePos(e) {
+  const rect = cnv.getBoundingClientRect();
+  return [
+    Math.floor((e.clientX - rect.left) / 32),
+    Math.floor((e.clientY - rect.top) / 32)
+  ];
+}
+
+function onMouseMove(e, hitDown, isOut) {
+  mpos = isOut ? [-1, -1] : mousePos(e);
+  const get = () => world[mpos[1]][mpos[0]];
+  const set = (v) => world[mpos[1]][mpos[0]] = v;
+  if (hitDown) {
+    mdown = get() === '#' ? 1 : 2;
+  }
+  if (mdown) {
+    set(mdown === 1 ? ' ' : '#');
+  }
+}
+
 window.addEventListener('keydown', onKeyDown);
 window.addEventListener('keyup', onKeyUp);
 window.addEventListener('blur', onBlur);
+cnv.addEventListener('mousemove', (e) => {
+  onMouseMove(e, false, false);
+});
+cnv.addEventListener('mouseout', (e) => {
+  mdown = 0;
+  onMouseMove(e, false, true);
+});
+cnv.addEventListener('mousedown', (e) => {
+  onMouseMove(e, true, false);
+});
+cnv.addEventListener('mouseup', (e) => {
+  mdown = 0;
+  onMouseMove(e, false, false);
+});
 
 //
 // Main code
@@ -330,6 +371,11 @@ const tileCollisionOffsets = {
   }
 };
 
+function mod16(n) {
+  // `n % 16` doesn't work well for negative numbers, so calculate euclidian mod instead:
+  return n - Math.floor(n / 16) * 16;
+}
+
 function tick() {
   if (hit.start) {
     playerIsBig = !playerIsBig;
@@ -418,7 +464,7 @@ function tick() {
 
   // collision detection setup
   const playerIsMovingUp = playerDY < 0;
-  const playerIsLeftHalf = (playerX % 16) < 8;
+  const playerIsLeftHalf = mod16(playerX) < 8;
   const colOffsets = !playerIsBig || playerIsDucking
     ? tileCollisionOffsets.small
     : tileCollisionOffsets.big;
@@ -427,12 +473,11 @@ function tick() {
       playerIsLeftHalf
       ? colOffsets.upLeft
       : colOffsets.upRight
-      )
-    : (
+    ) : (
       playerIsLeftHalf
       ? colOffsets.downLeft
       : colOffsets.downRight
-      );
+    );
 
   const solidVert1 = getTileFromPlayer(tVert[0], false);
   const solidVert2 = getTileFromPlayer(tVert[1], false);
@@ -451,7 +496,7 @@ function tick() {
       ? leftEdgeOffset
       : rightEdgeOffset;
     const edgeX = playerX + edx;
-    const localX = edgeX % 16;
+    const localX = mod16(edgeX);
     if (Math.floor(localX) !== 0) {
       // eject player from wall
       playerX += dir;
@@ -468,7 +513,7 @@ function tick() {
   if (playerDY >= 0 || !playerInAir) {
     if (solidVert) {
       // on solid ground
-      const localY = Math.floor(playerY) % 16;
+      const localY = mod16(Math.floor(playerY));
       if (localY < 6) {
         // snap to ground
         if (localY === 1) {
@@ -506,9 +551,11 @@ function getTileFromPlayer({ x: dx, y: dy }, horiz) {
   const sy = Math.floor(playerY) + dy;
   highlightPoint(sx, sy, horiz);
   const tx = Math.floor(sx / 16);
-  const ty = Math.floor(sy / 16);
+  let ty = Math.floor(sy / 16);
   if (ty < 0) {
-    return false;
+    ty = 0;
+  } else if (ty >= world.length) {
+    return true;
   }
   const row = world[ty];
   if (tx < 0 || tx >= row.length) {
