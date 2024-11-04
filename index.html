@@ -57,6 +57,13 @@ button {
     <button type="button" onClick="targetFPS=90">
       1.5x
     </button>
+    Zoom:
+    <button type="button" onClick="zoom(1)">
+      +
+    </button>
+    <button type="button" onClick="zoom(-1)">
+      &minus;
+    </button>
   </p>
   <p>SMB3 Physics <a href="https://github.com/velipso/smb3-physics">Source Code</a> /
     <a href="https://sean.fun/">Home</a></p>
@@ -65,8 +72,14 @@ button {
   <script>
 const cnv = document.getElementById('cnv');
 const ctx = cnv.getContext('2d');
-const dpr = 4;
+let dpr = 4;
 ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+function zoom(zin) {
+  dpr = Math.max(4, dpr += zin);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
 let mpos = [-1, -1];
 let mdown = 0;
 const inputEmpty = () => ({
@@ -230,8 +243,8 @@ function onBlur(){
 function mousePos(e) {
   const rect = cnv.getBoundingClientRect();
   return [
-    Math.floor((e.clientX - rect.left) / 32),
-    Math.floor((e.clientY - rect.top) / 32)
+    Math.floor((e.clientX - rect.left) / (8 * dpr)),
+    Math.floor((e.clientY - rect.top) / (8 * dpr))
   ];
 }
 
